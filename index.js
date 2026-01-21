@@ -11,20 +11,11 @@ const {
   WAWP_INSTANCE_ID,
   WAWP_ACCESS_TOKEN,
   TARGET_LID,
-  TG_TOKEN,
-  TG_CHAT_ID,
   DATABASE_URL,
   TIMEZONE = "Europe/Istanbul"
 } = process.env;
 
-if (
-  !WAWP_INSTANCE_ID ||
-  !WAWP_ACCESS_TOKEN ||
-  !TARGET_LID ||
-  !TG_TOKEN ||
-  !TG_CHAT_ID ||
-  !DATABASE_URL
-) {
+if (!WAWP_INSTANCE_ID || !WAWP_ACCESS_TOKEN || !TARGET_LID || !DATABASE_URL) {
   console.error("❌ ENV eksik");
   process.exit(1);
 }
@@ -33,73 +24,53 @@ if (
    APP
 ======================= */
 const app = express();
-app.use(express.json({
-  verify: (req, res, buf) => {
-    req.rawBody = buf.toString();
-  }
-}));
+app.use(express.json());
 
 /* =======================
-   DB
+   DB (SIFIRDAN)
 ======================= */
 const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-async function initDB() {
+async function resetDB() {
+  console.log("🧨 DB RESET başlıyor...");
+
+  await pool.query(`DROP TABLE IF EXISTS sessions;`);
+  await pool.query(`DROP TABLE IF EXISTS state;`);
+
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS state (
+    CREATE TABLE state (
       lid TEXT PRIMARY KEY,
       is_online BOOLEAN NOT NULL,
-      online_at TIMESTAMP,
-      telegram_message_id BIGINT
+      online_at TIMESTAMP
     );
   `);
 
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS sessions (
+    CREATE TABLE sessions (
       id SERIAL PRIMARY KEY,
       lid TEXT NOT NULL,
       online_at TIMESTAMP NOT NULL,
       offline_at TIMESTAMP,
-      duration_minutes INTEGER,
-      telegram_message_id BIGINT,
-      created_at TIMESTAMP DEFAULT NOW()
+      duration_minutes INTEGER
     );
   `);
 
-  console.log("✅ DB hazır");
+  console.log("✅ DB sıfırdan oluşturuldu");
 }
-initDB().catch(console.error);
+
+resetDB().catch(err => {
+  console.error("❌ DB RESET HATA:", err);
+  process.exit(1);
+});
 
 /* =======================
    TIME
 ======================= */
 const now = () => DateTime.now().setZone(TIMEZONE).toJSDate();
-const fmt = d => DateTime.fromJSDate(d).setZone(TIMEZONE).toFormat("HH:mm");
 const diffMin = (a, b) => Math.floor((b - a) / 60000);
-
-/* =======================
-   TELEGRAM
-======================= */
-const TG_API = `https://api.telegram.org/bot${TG_TOKEN}`;
-
-async function tgSend(text) {
-  const r = await axios.post(`${TG_API}/sendMessage`, {
-    chat_id: TG_CHAT_ID,
-    text
-  });
-  return r.data.result.message_id;
-}
-
-async function tgEdit(mid, text) {
-  await axios.post(`${TG_API}/editMessageText`, {
-    chat_id: TG_CHAT_ID,
-    message_id: mid,
-    text
-  });
-}
 
 /* =======================
    WAWP ONLINE KEEP ALIVE
@@ -117,16 +88,14 @@ async function keepOnline() {
         }
       }
     );
-    console.log("🟢 WAWP ONLINE keep-alive");
+    console.log("🟢 WAWP keep-alive online");
   } catch (e) {
-    console.error("❌ WAWP keep-alive hata:", e.message);
+    console.error("❌ keep-alive hata:", e.message);
   }
 }
 
 // HER 25 SANİYE
-setInterval(keepOnline, 25 * 1000);
-
-// İlk açılışta da çalıştır
+setInterval(keepOnline, 120 * 1000);
 keepOnline();
 
 /* =======================
@@ -149,52 +118,41 @@ app.post("/webhook", async (req, res) => {
       [TARGET_LID]
     );
 
-    const state = rows[0] || { is_online: false };
+    const state = rows[0];
 
-    // 🟢 ONLINE
-    if (isOnline && !state.is_online) {
-      const mid = await tgSend(
-        `🟢 ONLINE\n🆔 ${TARGET_LID}\n🕒 ${fmt(t)}`
+    // 🟢 ONLINE (ilk giriş)
+    if (isOnline && !state) {
+      await pool.query(
+        "INSERT INTO state (lid,is_online,online_at) VALUES ($1,true,$2)",
+        [TARGET_LID, t]
       );
 
-      await pool.query(`
-        INSERT INTO state (lid,is_online,online_at,telegram_message_id)
-        VALUES ($1,true,$2,$3)
-        ON CONFLICT (lid)
-        DO UPDATE SET is_online=true,online_at=$2,telegram_message_id=$3
-      `, [TARGET_LID, t, mid]);
+      await pool.query(
+        "INSERT INTO sessions (lid,online_at) VALUES ($1,$2)",
+        [TARGET_LID, t]
+      );
 
-      await pool.query(`
-        INSERT INTO sessions (lid,online_at,telegram_message_id)
-        VALUES ($1,$2,$3)
-      `, [TARGET_LID, t, mid]);
+      console.log("🟢 ONLINE BAŞLADI:", TARGET_LID);
     }
 
     // 🔴 OFFLINE
-    if (isOffline && state.is_online) {
+    if (isOffline && state?.is_online) {
       const mins = diffMin(state.online_at, t);
 
-      await tgEdit(
-        state.telegram_message_id,
-        `🔴 OFFLINE\n🆔 ${TARGET_LID}\n\n🟢 ${fmt(state.online_at)}\n🔴 ${fmt(t)}\n⏱ ${mins} dk`
+      await pool.query(
+        "UPDATE sessions SET offline_at=$1, duration_minutes=$2 WHERE lid=$3 AND offline_at IS NULL",
+        [t, mins, TARGET_LID]
       );
 
-      await pool.query(`
-        UPDATE sessions
-        SET offline_at=$1, duration_minutes=$2
-        WHERE telegram_message_id=$3
-      `, [t, mins, state.telegram_message_id]);
+      await pool.query(
+        "DELETE FROM state WHERE lid=$1",
+        [TARGET_LID]
+      );
 
-      await pool.query(`
-        UPDATE state
-        SET is_online=false, online_at=NULL, telegram_message_id=NULL
-        WHERE lid=$1
-      `, [TARGET_LID]);
+      console.log("🔴 OFFLINE BİTTİ:", TARGET_LID, mins, "dk");
     }
 
-    console.log("📡 PRESENCE:", lastKnownPresence);
     res.sendStatus(200);
-
   } catch (e) {
     console.error("❌ WEBHOOK HATA:", e);
     res.sendStatus(500);
@@ -205,7 +163,7 @@ app.post("/webhook", async (req, res) => {
    HEALTH
 ======================= */
 app.get("/", (_, res) => {
-  res.send("WAWP LID presence system aktif");
+  res.send("SIFIRDAN LID TAKİP SİSTEMİ AKTİF");
 });
 
 app.listen(PORT, () => {
