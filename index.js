@@ -27,21 +27,16 @@ const app = express();
 app.use(express.json());
 
 /* =======================
-   DB (SIFIRDAN)
+   DB
 ======================= */
 const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-async function resetDB() {
-  console.log("🧨 DB RESET başlıyor...");
-
-  await pool.query(`DROP TABLE IF EXISTS sessions;`);
-  await pool.query(`DROP TABLE IF EXISTS state;`);
-
+async function initDB() {
   await pool.query(`
-    CREATE TABLE state (
+    CREATE TABLE IF NOT EXISTS state (
       lid TEXT PRIMARY KEY,
       is_online BOOLEAN NOT NULL,
       online_at TIMESTAMP
@@ -49,7 +44,7 @@ async function resetDB() {
   `);
 
   await pool.query(`
-    CREATE TABLE sessions (
+    CREATE TABLE IF NOT EXISTS sessions (
       id SERIAL PRIMARY KEY,
       lid TEXT NOT NULL,
       online_at TIMESTAMP NOT NULL,
@@ -58,11 +53,11 @@ async function resetDB() {
     );
   `);
 
-  console.log("✅ DB sıfırdan oluşturuldu");
+  console.log("✅ DB hazır");
 }
 
-resetDB().catch(err => {
-  console.error("❌ DB RESET HATA:", err);
+initDB().catch(err => {
+  console.error("❌ DB HATA:", err);
   process.exit(1);
 });
 
@@ -73,7 +68,8 @@ const now = () => DateTime.now().setZone(TIMEZONE).toJSDate();
 const diffMin = (a, b) => Math.floor((b - a) / 60000);
 
 /* =======================
-   WAWP ONLINE KEEP ALIVE
+   WAWP ONLINE KEEP-ALIVE
+   (DAKİKADA 1)
 ======================= */
 async function keepOnline() {
   try {
@@ -88,14 +84,15 @@ async function keepOnline() {
         }
       }
     );
-    console.log("🟢 WAWP keep-alive online");
+    console.log("🟢 WAWP keep-alive (online)");
   } catch (e) {
     console.error("❌ keep-alive hata:", e.message);
   }
 }
 
-// HER 25 SANİYE
-setInterval(keepOnline, 120 * 1000);
+// ⏱️ HER 60 SANİYE
+setInterval(keepOnline, 60 * 1000);
+// Başlangıçta bir kez
 keepOnline();
 
 /* =======================
@@ -117,39 +114,33 @@ app.post("/webhook", async (req, res) => {
       "SELECT * FROM state WHERE lid=$1",
       [TARGET_LID]
     );
-
     const state = rows[0];
 
-    // 🟢 ONLINE (ilk giriş)
+    // 🟢 ONLINE (ilk kez)
     if (isOnline && !state) {
       await pool.query(
         "INSERT INTO state (lid,is_online,online_at) VALUES ($1,true,$2)",
         [TARGET_LID, t]
       );
-
       await pool.query(
         "INSERT INTO sessions (lid,online_at) VALUES ($1,$2)",
         [TARGET_LID, t]
       );
-
-      console.log("🟢 ONLINE BAŞLADI:", TARGET_LID);
+      console.log("🟢 ONLINE başladı:", TARGET_LID);
     }
 
     // 🔴 OFFLINE
     if (isOffline && state?.is_online) {
       const mins = diffMin(state.online_at, t);
-
       await pool.query(
         "UPDATE sessions SET offline_at=$1, duration_minutes=$2 WHERE lid=$3 AND offline_at IS NULL",
         [t, mins, TARGET_LID]
       );
-
       await pool.query(
         "DELETE FROM state WHERE lid=$1",
         [TARGET_LID]
       );
-
-      console.log("🔴 OFFLINE BİTTİ:", TARGET_LID, mins, "dk");
+      console.log("🔴 OFFLINE:", TARGET_LID, mins, "dk");
     }
 
     res.sendStatus(200);
@@ -163,7 +154,7 @@ app.post("/webhook", async (req, res) => {
    HEALTH
 ======================= */
 app.get("/", (_, res) => {
-  res.send("SIFIRDAN LID TAKİP SİSTEMİ AKTİF");
+  res.send("LID takip sistemi aktif (keep-alive 1 dk)");
 });
 
 app.listen(PORT, () => {
