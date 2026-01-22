@@ -8,7 +8,7 @@ const {
 } = process.env;
 
 if (!WAWP_INSTANCE_ID || !WAWP_ACCESS_TOKEN) {
-  console.error("❌ ENV eksik: WAWP_INSTANCE_ID / WAWP_ACCESS_TOKEN");
+  console.error("❌ ENV eksik");
   process.exit(1);
 }
 
@@ -22,11 +22,11 @@ app.use(express.json({
 }));
 
 /* =======================
-   KEEP-ALIVE (1 dk)
+   KEEP ALIVE (1 DK)
 ======================= */
 async function keepOnline() {
   try {
-    const r = await axios.post(
+    const res = await axios.post(
       "https://wawp.net/wp-json/awp/v1/presence",
       null,
       {
@@ -40,21 +40,20 @@ async function keepOnline() {
     );
 
     console.log("🟢 KEEP-ALIVE OK",
-      "status:", r.status,
-      "data:", typeof r.data === "string" ? r.data : JSON.stringify(r.data)
+      "status:", res.status,
+      "time:", new Date().toISOString()
     );
   } catch (e) {
-    const status = e.response?.status;
-    const data = e.response?.data;
     console.error("🔴 KEEP-ALIVE FAIL",
-      "status:", status,
-      "data:", data ? (typeof data === "string" ? data : JSON.stringify(data)) : "",
-      "msg:", e.message
+      "time:", new Date().toISOString(),
+      "msg:", e.message,
+      "status:", e.response?.status,
+      "data:", e.response?.data
     );
   }
 }
 
-// başlangıçta 1 kez + her 60 sn
+// Başlangıç + her 60 saniye
 keepOnline();
 setInterval(keepOnline, 60 * 1000);
 
@@ -62,12 +61,10 @@ setInterval(keepOnline, 60 * 1000);
    WEBHOOK DEBUG
 ======================= */
 app.post("/webhook", (req, res) => {
-  const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
-
   console.log("========================================");
   console.log("🚀 WEBHOOK GELDİ");
   console.log("🕒 TIME:", new Date().toISOString());
-  console.log("🌍 IP:", ip);
+  console.log("🌍 IP:", req.headers["x-forwarded-for"] || req.socket.remoteAddress);
   console.log("📦 HEADERS:");
   console.log(JSON.stringify(req.headers, null, 2));
   console.log("📄 RAW BODY:");
@@ -79,9 +76,11 @@ app.post("/webhook", (req, res) => {
   res.sendStatus(200);
 });
 
-// hızlı test için
+/* =======================
+   HEALTH
+======================= */
 app.get("/", (_, res) => {
-  res.send("DEBUG mode aktif. /webhook dinleniyor.");
+  res.send("DEBUG aktif: keep-alive + webhook log");
 });
 
 app.listen(PORT, () => {
