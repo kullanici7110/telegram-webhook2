@@ -1,79 +1,32 @@
 const express = require("express");
 const axios = require("axios");
-const { Pool } = require("pg");
-const { DateTime } = require("luxon");
 
-/* =======================
-   ENV
-======================= */
 const {
   PORT = 3000,
   WAWP_INSTANCE_ID,
-  WAWP_ACCESS_TOKEN,
-  TARGET_LID,
-  DATABASE_URL,
-  TIMEZONE = "Europe/Istanbul"
+  WAWP_ACCESS_TOKEN
 } = process.env;
 
-if (!WAWP_INSTANCE_ID || !WAWP_ACCESS_TOKEN || !TARGET_LID || !DATABASE_URL) {
-  console.error("❌ ENV eksik");
+if (!WAWP_INSTANCE_ID || !WAWP_ACCESS_TOKEN) {
+  console.error("❌ ENV eksik: WAWP_INSTANCE_ID / WAWP_ACCESS_TOKEN");
   process.exit(1);
 }
 
-/* =======================
-   APP
-======================= */
 const app = express();
-app.use(express.json());
+
+// RAW BODY yakala
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString();
+  }
+}));
 
 /* =======================
-   DB
-======================= */
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
-
-async function initDB() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS state (
-      lid TEXT PRIMARY KEY,
-      is_online BOOLEAN NOT NULL,
-      online_at TIMESTAMP
-    );
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      id SERIAL PRIMARY KEY,
-      lid TEXT NOT NULL,
-      online_at TIMESTAMP NOT NULL,
-      offline_at TIMESTAMP,
-      duration_minutes INTEGER
-    );
-  `);
-
-  console.log("✅ DB hazır");
-}
-
-initDB().catch(err => {
-  console.error("❌ DB HATA:", err);
-  process.exit(1);
-});
-
-/* =======================
-   TIME
-======================= */
-const now = () => DateTime.now().setZone(TIMEZONE).toJSDate();
-const diffMin = (a, b) => Math.floor((b - a) / 60000);
-
-/* =======================
-   WAWP ONLINE KEEP-ALIVE
-   (DAKİKADA 1)
+   KEEP-ALIVE (1 dk)
 ======================= */
 async function keepOnline() {
   try {
-    await axios.post(
+    const r = await axios.post(
       "https://wawp.net/wp-json/awp/v1/presence",
       null,
       {
@@ -81,82 +34,56 @@ async function keepOnline() {
           instance_id: WAWP_INSTANCE_ID,
           access_token: WAWP_ACCESS_TOKEN,
           presence: "online"
-        }
+        },
+        timeout: 15000
       }
     );
-    console.log("🟢 WAWP keep-alive (online)");
+
+    console.log("🟢 KEEP-ALIVE OK",
+      "status:", r.status,
+      "data:", typeof r.data === "string" ? r.data : JSON.stringify(r.data)
+    );
   } catch (e) {
-    console.error("❌ keep-alive hata:", e.message);
+    const status = e.response?.status;
+    const data = e.response?.data;
+    console.error("🔴 KEEP-ALIVE FAIL",
+      "status:", status,
+      "data:", data ? (typeof data === "string" ? data : JSON.stringify(data)) : "",
+      "msg:", e.message
+    );
   }
 }
 
-// ⏱️ HER 60 SANİYE
-setInterval(keepOnline, 60 * 1000);
-// Başlangıçta bir kez
+// başlangıçta 1 kez + her 60 sn
 keepOnline();
+setInterval(keepOnline, 60 * 1000);
 
 /* =======================
-   WEBHOOK
+   WEBHOOK DEBUG
 ======================= */
-app.post("/webhook", async (req, res) => {
-  try {
-    const presence = req.body?.payload?.presences?.[0];
-    if (!presence) return res.sendStatus(200);
+app.post("/webhook", (req, res) => {
+  const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
 
-    const { participant, lastKnownPresence } = presence;
-    if (participant !== TARGET_LID) return res.sendStatus(200);
+  console.log("========================================");
+  console.log("🚀 WEBHOOK GELDİ");
+  console.log("🕒 TIME:", new Date().toISOString());
+  console.log("🌍 IP:", ip);
+  console.log("📦 HEADERS:");
+  console.log(JSON.stringify(req.headers, null, 2));
+  console.log("📄 RAW BODY:");
+  console.log(req.rawBody);
+  console.log("📄 PARSED BODY:");
+  console.log(JSON.stringify(req.body, null, 2));
+  console.log("========================================");
 
-    const isOnline = ["online", "typing", "recording"].includes(lastKnownPresence);
-    const isOffline = lastKnownPresence === "offline";
-    const t = now();
-
-    const { rows } = await pool.query(
-      "SELECT * FROM state WHERE lid=$1",
-      [TARGET_LID]
-    );
-    const state = rows[0];
-
-    // 🟢 ONLINE (ilk kez)
-    if (isOnline && !state) {
-      await pool.query(
-        "INSERT INTO state (lid,is_online,online_at) VALUES ($1,true,$2)",
-        [TARGET_LID, t]
-      );
-      await pool.query(
-        "INSERT INTO sessions (lid,online_at) VALUES ($1,$2)",
-        [TARGET_LID, t]
-      );
-      console.log("🟢 ONLINE başladı:", TARGET_LID);
-    }
-
-    // 🔴 OFFLINE
-    if (isOffline && state?.is_online) {
-      const mins = diffMin(state.online_at, t);
-      await pool.query(
-        "UPDATE sessions SET offline_at=$1, duration_minutes=$2 WHERE lid=$3 AND offline_at IS NULL",
-        [t, mins, TARGET_LID]
-      );
-      await pool.query(
-        "DELETE FROM state WHERE lid=$1",
-        [TARGET_LID]
-      );
-      console.log("🔴 OFFLINE:", TARGET_LID, mins, "dk");
-    }
-
-    res.sendStatus(200);
-  } catch (e) {
-    console.error("❌ WEBHOOK HATA:", e);
-    res.sendStatus(500);
-  }
+  res.sendStatus(200);
 });
 
-/* =======================
-   HEALTH
-======================= */
+// hızlı test için
 app.get("/", (_, res) => {
-  res.send("LID takip sistemi aktif (keep-alive 1 dk)");
+  res.send("DEBUG mode aktif. /webhook dinleniyor.");
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server ${PORT} portunda`);
+  console.log(`✅ DEBUG server aktif. Port: ${PORT}`);
 });
