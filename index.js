@@ -12,6 +12,7 @@ const {
   WAWP_INSTANCE_ID,
   WAWP_ACCESS_TOKEN,
   TARGET_LID,
+  WAWP_POLL_LID,
   DATABASE_URL,
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHAT_ID,
@@ -54,13 +55,8 @@ const fmtTime = (d) =>
 
 function formatDuration(start, end) {
   const diffSec = Math.floor((end - start) / 1000);
-
-  if (diffSec < 60) {
-    return `${diffSec} sn`;
-  }
-
-  const diffMin = Math.floor(diffSec / 60);
-  return `${diffMin} dk`;
+  if (diffSec < 60) return `${diffSec} sn`;
+  return `${Math.floor(diffSec / 60)} dk`;
 }
 
 /* =======================
@@ -85,7 +81,7 @@ async function editTelegram(messageId, text) {
 }
 
 /* =======================
-   WAWP KEEP ALIVE
+   WAWP KEEP-ALIVE (1 DK)
 ======================= */
 async function keepOnline() {
   try {
@@ -105,9 +101,34 @@ async function keepOnline() {
     console.error("❌ keep-alive hata:", e.message);
   }
 }
-
 setInterval(keepOnline, 60 * 1000);
 keepOnline();
+
+/* =======================
+   WAWP GET POLL (20 DK)
+======================= */
+const POLL_LID = WAWP_POLL_LID || TARGET_LID;
+
+async function pollPresence() {
+  try {
+    await axios.get(
+      `https://wawp.net/wp-json/awp/v1/presence/${POLL_LID}`,
+      {
+        params: {
+          instance_id: WAWP_INSTANCE_ID,
+          access_token: WAWP_ACCESS_TOKEN
+        }
+      }
+    );
+    console.log("📡 Presence poll OK");
+  } catch (e) {
+    console.error("❌ Presence poll hata:", e.message);
+  }
+}
+
+// ⏱️ 20 dakikada bir + başlangıçta 1 kez
+setInterval(pollPresence, 20 * 60 * 1000);
+pollPresence();
 
 /* =======================
    WEBHOOK
