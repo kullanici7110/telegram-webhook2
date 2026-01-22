@@ -12,7 +12,6 @@ const {
   WAWP_INSTANCE_ID,
   WAWP_ACCESS_TOKEN,
   TARGET_LID,
-  WAWP_POLL_LID,
   DATABASE_URL,
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHAT_ID,
@@ -45,39 +44,24 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-async function initDB() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS state (
-      lid TEXT PRIMARY KEY,
-      is_online BOOLEAN NOT NULL,
-      online_at TIMESTAMP NOT NULL,
-      telegram_message_id BIGINT
-    );
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      id SERIAL PRIMARY KEY,
-      lid TEXT NOT NULL,
-      online_at TIMESTAMP NOT NULL,
-      offline_at TIMESTAMP,
-      duration_minutes INTEGER
-    );
-  `);
-
-  console.log("✅ DB hazır");
-}
-
-initDB().catch(err => {
-  console.error("❌ DB HATA:", err);
-  process.exit(1);
-});
-
 /* =======================
-   TIME
+   TIME HELPERS
 ======================= */
 const now = () => DateTime.now().setZone(TIMEZONE).toJSDate();
-const diffMin = (a, b) => Math.floor((b - a) / 60000);
+
+const fmtTime = (d) =>
+  DateTime.fromJSDate(d).setZone(TIMEZONE).toFormat("HH:mm");
+
+function formatDuration(start, end) {
+  const diffSec = Math.floor((end - start) / 1000);
+
+  if (diffSec < 60) {
+    return `${diffSec} sn`;
+  }
+
+  const diffMin = Math.floor(diffSec / 60);
+  return `${diffMin} dk`;
+}
 
 /* =======================
    TELEGRAM
@@ -101,7 +85,7 @@ async function editTelegram(messageId, text) {
 }
 
 /* =======================
-   WAWP KEEP ALIVE (1 DK)
+   WAWP KEEP ALIVE
 ======================= */
 async function keepOnline() {
   try {
@@ -126,29 +110,6 @@ setInterval(keepOnline, 60 * 1000);
 keepOnline();
 
 /* =======================
-   WAWP GET POLL (20 DK)
-======================= */
-async function pollPresence() {
-  try {
-    const res = await axios.get(
-      `https://wawp.net/wp-json/awp/v1/presence/${WAWP_POLL_LID}`,
-      {
-        params: {
-          instance_id: WAWP_INSTANCE_ID,
-          access_token: WAWP_ACCESS_TOKEN
-        }
-      }
-    );
-    console.log("📡 Presence poll OK");
-  } catch (e) {
-    console.error("❌ Presence poll hata:", e.message);
-  }
-}
-
-setInterval(pollPresence, 20 * 60 * 1000);
-pollPresence();
-
-/* =======================
    WEBHOOK
 ======================= */
 app.post("/webhook", async (req, res) => {
@@ -171,7 +132,9 @@ app.post("/webhook", async (req, res) => {
 
     /* 🟢 ONLINE */
     if (isOnline && !state) {
-      const msgId = await sendTelegram("🟢 ÇEVRİM İÇİ");
+      const msgId = await sendTelegram(
+        `🟢 ÇEVRİM İÇİ\n\n🟢 ${fmtTime(t)}`
+      );
 
       await pool.query(
         "INSERT INTO state (lid,is_online,online_at,telegram_message_id) VALUES ($1,true,$2,$3)",
@@ -183,21 +146,29 @@ app.post("/webhook", async (req, res) => {
         [TARGET_LID, t]
       );
 
-      console.log("🟢 ONLINE başladı + Telegram");
+      console.log("🟢 ONLINE başladı");
     }
 
     /* 🔴 OFFLINE */
     if (isOffline && state?.is_online) {
-      const mins = diffMin(state.online_at, t);
+      const durationText = formatDuration(state.online_at, t);
 
-      await editTelegram(
-        state.telegram_message_id,
-        `🔴 ÇEVRİM DIŞI\n⏱️ ${mins} dakika aktif kaldı`
-      );
+      const text =
+`🔴 ÇEVRİM DIŞI
+
+🟢 ${fmtTime(state.online_at)}
+🔴 ${fmtTime(t)}
+⏱ ${durationText}`;
+
+      await editTelegram(state.telegram_message_id, text);
 
       await pool.query(
         "UPDATE sessions SET offline_at=$1, duration_minutes=$2 WHERE lid=$3 AND offline_at IS NULL",
-        [t, mins, TARGET_LID]
+        [
+          t,
+          Math.floor((t - state.online_at) / 60000),
+          TARGET_LID
+        ]
       );
 
       await pool.query(
@@ -205,7 +176,7 @@ app.post("/webhook", async (req, res) => {
         [TARGET_LID]
       );
 
-      console.log("🔴 OFFLINE + Telegram güncellendi");
+      console.log("🔴 OFFLINE");
     }
 
     res.sendStatus(200);
