@@ -1,18 +1,19 @@
 const express = require("express");
 
-const PORT = process.env.PORT || 3000;
 const app = express();
 
-// RAW BODY yakala
+/**
+ * RAW BODY yakalamak için özel json parser
+ */
 app.use(express.json({
   verify: (req, res, buf) => {
     req.rawBody = buf.toString();
   }
 }));
 
-/* =======================
-   WEBHOOK DEBUG
-======================= */
+/**
+ * WAWP WEBHOOK ENDPOINT
+ */
 app.post("/webhook", (req, res) => {
   console.log("========================================");
   console.log("🚀 WAWP WEBHOOK GELDİ");
@@ -29,13 +30,17 @@ app.post("/webhook", (req, res) => {
   res.sendStatus(200);
 });
 
-/* =======================
-   HEALTH
-======================= */
-app.get("/", (_, res) => {
-  res.send("Webhook DEBUG aktif (keep-online YOK)");
+/**
+ * Health check (Render için)
+ */
+app.get("/", (req, res) => {
+  res.send("Webhook debug aktif");
 });
 
+/**
+ * Server start
+ */
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`✅ WEBHOOK DEBUG AKTİF. Port: ${PORT}`);
+  console.log(`✅ Debug webhook aktif. Port: ${PORT}`);
 });
