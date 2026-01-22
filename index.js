@@ -101,7 +101,7 @@ async function keepOnline() {
     console.error("❌ keep-alive hata:", e.message);
   }
 }
-setInterval(keepOnline, 60 * 1000);
+setInterval(keepOnline, 5 * 60 * 1000);
 keepOnline();
 
 /* =======================
