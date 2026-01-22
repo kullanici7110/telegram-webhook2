@@ -1,3 +1,4 @@
+require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const { Pool } = require("pg");
@@ -11,11 +12,21 @@ const {
   WAWP_INSTANCE_ID,
   WAWP_ACCESS_TOKEN,
   TARGET_LID,
+  WAWP_POLL_LID,
   DATABASE_URL,
+  TELEGRAM_BOT_TOKEN,
+  TELEGRAM_CHAT_ID,
   TIMEZONE = "Europe/Istanbul"
 } = process.env;
 
-if (!WAWP_INSTANCE_ID || !WAWP_ACCESS_TOKEN || !TARGET_LID || !DATABASE_URL) {
+if (
+  !WAWP_INSTANCE_ID ||
+  !WAWP_ACCESS_TOKEN ||
+  !TARGET_LID ||
+  !DATABASE_URL ||
+  !TELEGRAM_BOT_TOKEN ||
+  !TELEGRAM_CHAT_ID
+) {
   console.error("❌ ENV eksik");
   process.exit(1);
 }
@@ -39,7 +50,8 @@ async function initDB() {
     CREATE TABLE IF NOT EXISTS state (
       lid TEXT PRIMARY KEY,
       is_online BOOLEAN NOT NULL,
-      online_at TIMESTAMP
+      online_at TIMESTAMP NOT NULL,
+      telegram_message_id BIGINT
     );
   `);
 
@@ -68,8 +80,28 @@ const now = () => DateTime.now().setZone(TIMEZONE).toJSDate();
 const diffMin = (a, b) => Math.floor((b - a) / 60000);
 
 /* =======================
-   WAWP ONLINE KEEP-ALIVE
-   (DAKİKADA 1)
+   TELEGRAM
+======================= */
+const TG_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
+
+async function sendTelegram(text) {
+  const res = await axios.post(`${TG_API}/sendMessage`, {
+    chat_id: TELEGRAM_CHAT_ID,
+    text
+  });
+  return res.data.result.message_id;
+}
+
+async function editTelegram(messageId, text) {
+  await axios.post(`${TG_API}/editMessageText`, {
+    chat_id: TELEGRAM_CHAT_ID,
+    message_id: messageId,
+    text
+  });
+}
+
+/* =======================
+   WAWP KEEP ALIVE (1 DK)
 ======================= */
 async function keepOnline() {
   try {
@@ -84,16 +116,37 @@ async function keepOnline() {
         }
       }
     );
-    console.log("🟢 WAWP keep-alive (online)");
+    console.log("🟢 WAWP keep-alive");
   } catch (e) {
     console.error("❌ keep-alive hata:", e.message);
   }
 }
 
-// ⏱️ HER 60 SANİYE
 setInterval(keepOnline, 60 * 1000);
-// Başlangıçta bir kez
 keepOnline();
+
+/* =======================
+   WAWP GET POLL (20 DK)
+======================= */
+async function pollPresence() {
+  try {
+    const res = await axios.get(
+      `https://wawp.net/wp-json/awp/v1/presence/${WAWP_POLL_LID}`,
+      {
+        params: {
+          instance_id: WAWP_INSTANCE_ID,
+          access_token: WAWP_ACCESS_TOKEN
+        }
+      }
+    );
+    console.log("📡 Presence poll OK");
+  } catch (e) {
+    console.error("❌ Presence poll hata:", e.message);
+  }
+}
+
+setInterval(pollPresence, 20 * 60 * 1000);
+pollPresence();
 
 /* =======================
    WEBHOOK
@@ -116,31 +169,43 @@ app.post("/webhook", async (req, res) => {
     );
     const state = rows[0];
 
-    // 🟢 ONLINE (ilk kez)
+    /* 🟢 ONLINE */
     if (isOnline && !state) {
+      const msgId = await sendTelegram("🟢 ÇEVRİM İÇİ");
+
       await pool.query(
-        "INSERT INTO state (lid,is_online,online_at) VALUES ($1,true,$2)",
-        [TARGET_LID, t]
+        "INSERT INTO state (lid,is_online,online_at,telegram_message_id) VALUES ($1,true,$2,$3)",
+        [TARGET_LID, t, msgId]
       );
+
       await pool.query(
         "INSERT INTO sessions (lid,online_at) VALUES ($1,$2)",
         [TARGET_LID, t]
       );
-      console.log("🟢 ONLINE başladı:", TARGET_LID);
+
+      console.log("🟢 ONLINE başladı + Telegram");
     }
 
-    // 🔴 OFFLINE
+    /* 🔴 OFFLINE */
     if (isOffline && state?.is_online) {
       const mins = diffMin(state.online_at, t);
+
+      await editTelegram(
+        state.telegram_message_id,
+        `🔴 ÇEVRİM DIŞI\n⏱️ ${mins} dakika aktif kaldı`
+      );
+
       await pool.query(
         "UPDATE sessions SET offline_at=$1, duration_minutes=$2 WHERE lid=$3 AND offline_at IS NULL",
         [t, mins, TARGET_LID]
       );
+
       await pool.query(
         "DELETE FROM state WHERE lid=$1",
         [TARGET_LID]
       );
-      console.log("🔴 OFFLINE:", TARGET_LID, mins, "dk");
+
+      console.log("🔴 OFFLINE + Telegram güncellendi");
     }
 
     res.sendStatus(200);
@@ -154,7 +219,7 @@ app.post("/webhook", async (req, res) => {
    HEALTH
 ======================= */
 app.get("/", (_, res) => {
-  res.send("LID takip sistemi aktif (keep-alive 1 dk)");
+  res.send("LID takip sistemi aktif");
 });
 
 app.listen(PORT, () => {
