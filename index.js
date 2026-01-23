@@ -127,7 +127,7 @@ async function pollPresence() {
 }
 
 // ⏱️ 20 dakikada bir + başlangıçta 1 kez
-setInterval(pollPresence, 5 * 60 * 1000);
+setInterval(pollPresence, 10 * 60 * 1000);
 pollPresence();
 
 /* =======================
