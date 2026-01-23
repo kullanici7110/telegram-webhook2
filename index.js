@@ -101,7 +101,7 @@ async function keepOnline() {
     console.error("❌ keep-alive hata:", e.message);
   }
 }
-setInterval(keepOnline, 5 * 60 * 1000);
+setInterval(keepOnline, 3 * 60 * 1000);
 keepOnline();
 
 /* =======================
@@ -127,7 +127,7 @@ async function pollPresence() {
 }
 
 // ⏱️ 20 dakikada bir + başlangıçta 1 kez
-setInterval(pollPresence, 20 * 60 * 1000);
+setInterval(pollPresence, 5 * 60 * 1000);
 pollPresence();
 
 /* =======================
